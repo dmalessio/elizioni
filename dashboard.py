@@ -91,20 +91,30 @@ while True:
             for r in reg_list:
                 s = r['scheda'][0]
                 cod_reg = int(r['int']['cod_reg'])
+                elettori_reg = r['int']['ele_t']
                 
                 # Recupera i dati di affluenza per la regione corrente
                 voti_reg = mappa_votanti_reg.get(cod_reg, {"votanti": 0, "affluenza_perc": "0"})
+                
+                voti_si = s['voti_si']
+                voti_no = s['voti_no']
+                
+                # Calcolo del peso reale sull'intero corpo elettorale
+                peso_si = (voti_si / elettori_reg * 100) if elettori_reg > 0 else 0
+                peso_no = (voti_no / elettori_reg * 100) if elettori_reg > 0 else 0
                 
                 rows.append({
                     "ID": cod_reg,
                     "Regione": r['int']['desc_reg'],
                     "NO (%)": float(s['perc_no'].replace(',', '.')),
                     "SÌ (%)": float(s['perc_si'].replace(',', '.')),
-                    "Voti NO": s['voti_no'],
-                    "Voti SÌ": s['voti_si'],
+                    "Peso NO su Elettori (%)": round(peso_no, 2),
+                    "Peso SÌ su Elettori (%)": round(peso_si, 2),
+                    "Voti NO": voti_no,
+                    "Voti SÌ": voti_si,
                     "Sezioni": f"{s['sz_perv']}/{r['int']['sz_tot']}",
                     "Votanti": voti_reg['votanti'],
-                    "Affluenza (%)": float(voti_reg['affluenza_perc'].replace(',', '.')) if voti_reg['affluenza_perc'] else 0.0
+                    "Affluenza (%)": float(str(voti_reg['affluenza_perc']).replace(',', '.')) if voti_reg['affluenza_perc'] else 0.0
                 })
             
             df = pd.DataFrame(rows)
