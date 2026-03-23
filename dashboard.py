@@ -6,34 +6,17 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 # --- CONFIGURAZIONE ---
-BASE_URL = "https://eleapi.interno.gov.it/siel/PX/scrutiniFI/DE/20260322/TE/09/SK/01"
+BASE_URL_SCRUTINI = "https://eleapi.interno.gov.it/siel/PX/scrutiniFI/DE/20260322/TE/09/SK/01"
+URL_VOTANTI = "https://eleapi.interno.gov.it/siel/PX/votantiFI/DE/20260322/TE/09/SK/01"
+
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Referer": "https://elezioni.interno.gov.it/",
     "Origin": "https://elezioni.interno.gov.it"
 }
-# Lista ID regioni ISTAT/Eligendo
 REGION_IDS = [str(i).zfill(2) for i in range(1, 21)]
 
 st.set_page_config(page_title="Referendum 2026 Live", layout="wide")
-
-def fetch_json(url):
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=5)
-        return r.json() if r.status_code == 200 else None
-    except:
-        return None
-
-def get_all_data():
-    # 1. Recupero Totale Nazionale
-    nazionale = fetch_json(BASE_URL)
-    
-    # 2. Recupero Regioni in parallelo (per velocità)
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        urls = [f"{BASE_URL}/RE/{rid}" for rid in REGION_IDS]
-        results = list(executor.map(fetch_json, urls))
-    
-    return nazionale, [r for r in results if r]
 
 @st.cache_data
 def load_geojson():
@@ -44,65 +27,112 @@ def load_geojson():
         st.error("Impossibile caricare i confini della mappa.")
         return None
 
-geojson_italia = load_geojson()    
+def fetch_json(url):
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=5)
+        return r.json() if r.status_code == 200 else None
+    except:
+        return None
+
+def get_all_data():
+    # 1. Recupero Dati Nazionali (Scrutini e Votanti)
+    nazionale_scrutini = fetch_json(BASE_URL_SCRUTINI)
+    dati_votanti = fetch_json(URL_VOTANTI)
+    
+    # 2. Recupero Scrutini Regionali in parallelo
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        urls = [f"{BASE_URL_SCRUTINI}/RE/{rid}" for rid in REGION_IDS]
+        regioni_scrutini = list(executor.map(fetch_json, urls))
+        
+    return nazionale_scrutini, [r for r in regioni_scrutini if r], dati_votanti
 
 # --- INTERFACCIA ---
+geojson_italia = load_geojson()
 st.title("🗳️ Live Dashboard: Referendum Costituzionale 2026")
 container = st.empty()
 
 while True:
     with container.container():
-        naz, reg_list = get_all_data()
+        naz, reg_list, votanti = get_all_data()
         
-        if naz:
+        if naz and votanti:
             res_n = naz['scheda'][0]
-            # KPI Nazionali
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Scrutinio Nazionale", f"{res_n['perc_si']}% SÌ", f"{res_n['sz_perv']:,} sezioni")
-            c2.metric("Voti SÌ", f"{res_n['voti_si']:,}")
-            c3.metric("Voti NO", f"{res_n['voti_no']:,}")
-            c4.metric("Elettori Totali", f"{naz['int']['ele_t']:,}")
+            
+            # Parsing Dati Votanti Nazionali (Prende l'ultimo elemento dell'array com_vot)
+            dati_naz_votanti = votanti['enti']['ente_p']
+            ultimo_agg_votanti = dati_naz_votanti['com_vot'][-1]
+            tot_votanti = ultimo_agg_votanti['vot_t']
+            perc_affluenza = ultimo_agg_votanti['perc']
+            tot_elettori = dati_naz_votanti['ele_t']
 
-        if reg_list:
-            # Creazione Tabella
+            # Calcolo percentuale di sezioni scrutinate
+            progresso_sezioni = (res_n['sz_perv'] / naz['int']['sz_tot']) * 100 if naz['int']['sz_tot'] > 0 else 0
+
+            # KPI Nazionali Riorganizzati
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Progresso Scrutinio", f"{progresso_sezioni:.2f}%", f"{res_n['sz_perv']:,} su {naz['int']['sz_tot']:,} sezioni", delta_color="off")
+            c2.metric("SÌ", f"{res_n['perc_si']}%", f"{res_n['voti_si']:,} voti", delta_color="off")
+            c3.metric("NO", f"{res_n['perc_no']}%", f"{res_n['voti_no']:,} voti", delta_color="off")
+            c4.metric("Affluenza", f"{perc_affluenza}%", f"{tot_votanti:,} votanti", delta_color="off")
+
+        if reg_list and votanti:
+            # Creazione dizionario veloce per incrociare i votanti per ID regione
+            mappa_votanti_reg = {}
+            for reg_v in votanti['enti']['enti_f']:
+                cod_reg = int(reg_v['cod'])
+                ultimo_agg = reg_v['com_vot'][-1]
+                mappa_votanti_reg[cod_reg] = {
+                    "votanti": ultimo_agg['vot_t'],
+                    "affluenza_perc": ultimo_agg['perc']
+                }
+
+            # Costruzione Tabella Unificata
             rows = []
             for r in reg_list:
                 s = r['scheda'][0]
+                cod_reg = int(r['int']['cod_reg'])
+                
+                # Recupera i dati di affluenza per la regione corrente
+                voti_reg = mappa_votanti_reg.get(cod_reg, {"votanti": 0, "affluenza_perc": "0"})
+                
                 rows.append({
-                    "ID": int(r['int']['cod_reg']),  # <-- AGGIUNTA FONDAMENTALE (Codice ISTAT)
+                    "ID": cod_reg,
                     "Regione": r['int']['desc_reg'],
-                    "SÌ (%)": float(s['perc_si'].replace(',', '.')),
                     "NO (%)": float(s['perc_no'].replace(',', '.')),
-                    "Voti SÌ": s['voti_si'],
+                    "SÌ (%)": float(s['perc_si'].replace(',', '.')),
                     "Voti NO": s['voti_no'],
-                    "Sezioni": f"{s['sz_perv']}/{r['int']['sz_tot']}"
+                    "Voti SÌ": s['voti_si'],
+                    "Sezioni": f"{s['sz_perv']}/{r['int']['sz_tot']}",
+                    "Votanti": voti_reg['votanti'],
+                    "Affluenza (%)": float(voti_reg['affluenza_perc'].replace(',', '.')) if voti_reg['affluenza_perc'] else 0.0
                 })
             
             df = pd.DataFrame(rows)
 
-            # Mappa Italia
-            st.subheader("Mappa Distribuzione Voti (SÌ)")
-            # Nota: richiede geojson regioni italiane per visualizzazione corretta
-            fig = px.choropleth(df, 
-                                geojson=geojson_italia,
-                                locations="ID", 
-                                featureidkey="properties.reg_istat_code_num", 
-                                color="SÌ (%)",
-                                hover_name="Regione",
-                                hover_data={
-                                    "NO (%)": True,   # Mostra la percentuale del NO
-                                    "ID": False,      # Nasconde il codice ISTAT
-                                    "SÌ (%)": True    # (Opzionale) conferma la visualizzazione del SÌ
-                                },
-                                color_continuous_scale="RdYlGn")
-            
-            fig.update_geos(fitbounds="locations", visible=False) 
-            st.plotly_chart(fig, use_container_width=True)
+            # Mappa Italia (Focalizzata sul NO)
+            st.subheader("Mappa Distribuzione Voti (NO)")
+            if geojson_italia:
+                fig = px.choropleth(df, 
+                                    geojson=geojson_italia,
+                                    locations="ID", 
+                                    featureidkey="properties.reg_istat_code_num", 
+                                    color="NO (%)",
+                                    hover_name="Regione",
+                                    hover_data={
+                                        "NO (%)": True,
+                                        "SÌ (%)": True,
+                                        "Affluenza (%)": True, # Aggiunta l'affluenza nel tooltip della mappa
+                                        "ID": False
+                                    },
+                                    color_continuous_scale="Reds")
+                
+                fig.update_geos(fitbounds="locations", visible=False) 
+                st.plotly_chart(fig, use_container_width=True)
 
-            # Tabella Riepilogativa
+            # Tabella Riepilogativa (Ordinata per NO discendente)
             st.subheader("Dettaglio Regionale")
-            st.dataframe(df.sort_values("SÌ (%)", ascending=False), use_container_width=True, hide_index=True)
+            st.dataframe(df.sort_values("NO (%)", ascending=False), use_container_width=True, hide_index=True)
 
         st.caption(f"Ultimo aggiornamento: {time.strftime('%H:%M:%S')}")
-        time.sleep(120) # 2 minuti
+        time.sleep(120)
         st.rerun()
