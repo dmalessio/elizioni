@@ -137,11 +137,11 @@ while True:
                                     color_continuous_scale="Reds")
                 
                 fig.update_geos(fitbounds="locations", visible=False) 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
             # Tabella Riepilogativa (Ordinata per NO discendente)
             st.subheader("Dettaglio Regionale")
-            st.dataframe(df.sort_values("NO (%)", ascending=False), use_container_width=True, hide_index=True)
+            st.dataframe(df.sort_values("NO (%)", ascending=False), width='stretch', hide_index=True)
 
         st.caption(f"Ultimo aggiornamento: {time.strftime('%H:%M:%S')}")
         time.sleep(120)
